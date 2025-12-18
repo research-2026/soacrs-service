@@ -1,0 +1,110 @@
+// prisma/schema.prisma
+
+// -------------------------------------------
+// Data source & generator
+// -------------------------------------------
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// -------------------------------------------
+// Models
+// -------------------------------------------
+
+// Global tool registry
+model Tool {
+  id           String          @id @db.Text    // 'ehr-patient-api'
+  name         String          @db.Text
+  version      String          @db.Text
+  region       String?         @db.Text
+  baseCost     Decimal?        @db.Decimal(10, 4)
+  capabilities Json            @db.JsonB      // array of capabilities with schemas
+  meta         Json?           @db.JsonB
+  createdAt    DateTime        @default(now()) @db.Timestamptz(6)
+  updatedAt    DateTime        @default(now()) @updatedAt @db.Timestamptz(6)
+
+  tenantTools  TenantTool[]
+  metrics      ToolMetrics[]
+
+  @@map("tools")
+  @@index([region], map: "idx_tools_region")
+}
+
+// Tenant ↔ Tool activation & configuration
+model TenantTool {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId  String   @db.Text
+  toolId    String   @db.Text
+  enabled   Boolean  @default(true)
+  config    Json?    @db.JsonB
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+
+  tool Tool @relation(fields: [toolId], references: [id], onDelete: Cascade)
+
+  @@map("tenant_tools")
+  @@unique([tenantId, toolId], map: "idx_tenant_tools_unique")
+  @@index([tenantId], map: "idx_tenant_tools_tenant")
+}
+
+// Aggregated metrics for (tenant, tool, capability)
+model ToolMetrics {
+  tenantId       String   @db.Text
+  toolId         String   @db.Text
+  capability     String   @db.Text
+
+  successCount   BigInt   @default(0)
+  failureCount   BigInt   @default(0)
+  totalLatencyMs BigInt   @default(0)
+  avgReward      Decimal  @default(0) @db.Decimal(5, 4)
+  lastUpdated    DateTime @default(now()) @db.Timestamptz(6)
+
+  tool Tool @relation(fields: [toolId], references: [id], onDelete: Cascade)
+
+  @@id([tenantId, toolId, capability])
+  @@map("tool_metrics")
+  @@index([capability], map: "idx_tool_metrics_capability")
+}
+
+// Stored TaskRoutingPlan documents for audit & learning
+model PlanDocument {
+  planId     String   @id @db.Text       // TaskRoutingPlan.planId
+  tenantId   String   @db.Text
+  capability String   @db.Text          // TaskRoutingPlan.goal.capability
+  planJson   Json     @db.JsonB         // full TRP JSON
+  createdAt  DateTime @default(now()) @db.Timestamptz(6)
+
+  executionEvents ExecutionEvent[]
+
+  @@map("plan_documents")
+  @@index([tenantId], map: "idx_plan_documents_tenant")
+  @@index([capability], map: "idx_plan_documents_capability")
+}
+
+// Step-level telemetry from orchestrator
+model ExecutionEvent {
+  id         BigInt   @id @default(autoincrement())
+  planId     String   @db.Text
+  stepId     String   @db.Text
+  tenantId   String   @db.Text
+  toolId     String   @db.Text
+  capability String   @db.Text
+
+  latencyMs  Int      @db.Integer
+  success    Boolean
+  errorCode  String?  @db.Text
+  timestamp  DateTime @db.Timestamptz(6)
+
+  plan PlanDocument @relation(fields: [planId], references: [planId], onDelete: Cascade)
+
+  @@map("execution_events")
+  @@index([planId], map: "idx_execution_events_plan")
+  @@index([tenantId], map: "idx_execution_events_tenant")
+  @@index([toolId, capability], map: "idx_execution_events_tool_capability")
+}

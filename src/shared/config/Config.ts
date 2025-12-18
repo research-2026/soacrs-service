@@ -34,3 +34,17 @@ export const config: AppConfig = {
   serviceName: process.env.SERVICE_NAME || 'soacrs-service',
   serviceVersion: process.env.SERVICE_VERSION || '0.1.0',
 };
+
+/**
+ * Database connection URL used by Prisma.
+ * Throws if not configured to fail fast on startup.
+ */
+export function getDatabaseUrl(): string {
+  const url = process.env.DATABASE_URL;
+
+  if (!url || url.trim().length === 0) {
+    throw new Error('DATABASE_URL is not configured');
+  }
+
+  return url;
+}

@@ -1,0 +1,18 @@
+version: '3.9'
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: soacrs-postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: soacrs_db
+      POSTGRES_USER: soacrs
+      POSTGRES_PASSWORD: soacrs_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:
