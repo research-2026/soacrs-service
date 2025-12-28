@@ -69,3 +69,17 @@ export interface Tool {
    */
   meta?: Record<string, unknown>;
 }
+
+/**
+ * Abstraction for a tool registry that can look up tools
+ * enabled for a tenant and capable of handling a given capability.
+ */
+export interface IToolRegistry {
+  /**
+   * Fetch tools enabled for the given tenant that support the given capability.
+   *
+   * @param tenantId   Tenant identifier (e.g., "acme-health").
+   * @param capability Capability name (e.g., "patient.search").
+   */
+  getToolsForCapability(tenantId: string, capability: string): Promise<Tool[]>;
+}
