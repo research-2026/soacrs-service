@@ -1,40 +1,31 @@
+// src/coordination/domain/SemanticTask.ts
+
 /**
  * SemanticTask
  *
- * This represents the structured task that SOACRS receives
- * from the NL→Task translator (Mufthi's component).
- *
- * It is intentionally simpler than the final TaskRoutingPlan.
- * SOACRS will enrich this into a full plan, adding candidates,
- * steps, retry strategies, etc.
+ * Structured task input SOACRS receives from NL→Task translator.
+ * SOACRS enriches this into a TaskRoutingPlan (TRP).
  */
 
 /**
  * Type of requester:
- * - "user"    → direct end-user / human
- * - "service" → another backend service (e.g. NL→Task translator)
+ * - "user"    → end-user / human
+ * - "service" → another backend service
  */
 export type RequesterType = 'user' | 'service';
+
+/**
+ * Network deny policy mode.
+ * Shared between task constraints and plan constraints.
+ */
+export type NetworkDenyMode = 'never' | 'on-sensitive' | 'always';
 
 /**
  * Entity (user or service) that initiated the task.
  */
 export interface Requester {
-  /**
-   * "user" or "service".
-   */
   type: RequesterType;
-
-  /**
-   * Logical identifier of the requester.
-   * For a user this might be a userId; for a service, a clientId.
-   */
   id: string;
-
-  /**
-   * Optional scopes describing what this requester is allowed to do.
-   * Example: ["patient.read", "tool.invoke"]
-   */
   scopes?: string[];
 }
 
@@ -42,22 +33,8 @@ export interface Requester {
  * What the task is trying to achieve.
  */
 export interface TaskGoal {
-  /**
-   * Target capability for this task.
-   * Example: "patient.search", "order.create".
-   */
   capability: string;
-
-  /**
-   * Input payload for the capability.
-   * Example: { "mrn": "12345" }.
-   */
   input: Record<string, unknown>;
-
-  /**
-   * Optional human-readable description.
-   * Example: "Find patient by MRN".
-   */
   description?: string;
 }
 
@@ -65,29 +42,15 @@ export interface TaskGoal {
  * Execution constraints that guide routing decisions.
  */
 export interface TaskConstraints {
-  /**
-   * Overall time budget for fulfilling this task (in milliseconds).
-   * Optional.
-   */
   overallTimeoutMs?: number;
-
-  /**
-   * Maximum degree of parallelism allowed.
-   * Example: 1 (sequential), 2, 3, etc. Optional.
-   */
   maxParallel?: number;
-
-  /**
-   * Optional cost budget. The interpretation is up to the scoring engine
-   * (e.g. relative budget, monetary units, etc.).
-   */
   costBudget?: number;
+  privacyTags?: string[];
 
   /**
-   * Privacy tags associated with this task.
-   * Example: ["phi", "patient-id"].
+   * Optional network restriction hint (translator may omit).
    */
-  privacyTags?: string[];
+  denyNetworkWhen?: NetworkDenyMode;
 }
 
 /**
@@ -95,56 +58,25 @@ export interface TaskConstraints {
  */
 export interface TaskContext {
   /**
-   * Tenant identifier (e.g. customer / organisation).
-   * Example: "acme-health".
+   * Tenant identifier (e.g., customer / organisation).
    */
   tenant: string;
 
-  /**
-   * Optional correlation id used to trace this request across services.
-   */
   correlationId?: string;
-
-  /**
-   * Optional idempotency key used to deduplicate repeated submissions.
-   */
   idempotencyKey?: string;
-
-  /**
-   * Optional locale string (BCP 47), such as "en-US".
-   */
   locale?: string;
-
-  /**
-   * Optional region identifier, such as "us-east-1".
-   */
   region?: string;
 }
 
 /**
  * Top-level shape of a semantic task submitted to SOACRS.
  *
- * This is the canonical input type that SOACRS expects from
- * the NL→Task translator.
+ * NOTE:
+ * - tenant is inside `context.tenant` (NOT top-level).
  */
 export interface SemanticTask {
-  /**
-   * Context about the tenant and trace identifiers.
-   */
   context: TaskContext;
-
-  /**
-   * Entity (user/service) that is asking for this task to be performed.
-   */
   requester: Requester;
-
-  /**
-   * What the task is trying to achieve.
-   */
   goal: TaskGoal;
-
-  /**
-   * Optional execution constraints that guide routing decisions.
-   */
   constraints?: TaskConstraints;
 }

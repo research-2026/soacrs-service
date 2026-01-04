@@ -1,0 +1,25 @@
+{
+  "context": {
+    "tenant": "acme-health",
+    "correlationId": "c-55c8a7ef",
+    "idempotencyKey": "idem-1f8b0b2d-7a86",
+    "locale": "en-US",
+    "region": "us-east-1"
+  },
+  "requester": {
+    "type": "service",
+    "id": "llm-app",
+    "scopes": ["patient.read", "tool.invoke"]
+  },
+  "goal": {
+    "capability": "patient.search",
+    "input": { "mrn": "12345" },
+    "description": "Find patient by MRN"
+  },
+  "constraints": {
+    "overallTimeoutMs": 2000,
+    "maxParallel": 1,
+    "costBudget": 1.0,
+    "privacyTags": ["phi", "patient-id"]
+  }
+}

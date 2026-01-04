@@ -1,21 +1,23 @@
+// src/coordination/domain/Plan.ts
+
 /**
- * TaskRoutingPlan
+ * TaskRoutingPlan (TRP)
  *
- * This is the core output of SOACRS.
- * It is returned to the Orchestrator and describes:
- *  - Context and goal for the task
- *  - Constraints (timeouts, privacy, cost)
- *  - Candidate tools and scoring breakdown
- *  - Selected primary tool
- *  - Steps forming an executable state machine
- *  - Retry, telemetry and security hints
+ * Core output of SOACRS. Returned to the Orchestrator and describes:
+ * - Context + goal
+ * - Constraints
+ * - Candidate tools + explainable scoring
+ * - Selected tool
+ * - Executable steps (state machine)
+ * - Retry + telemetry + security hints
  */
 
 import type { Requester, TaskConstraints, TaskContext, TaskGoal } from './SemanticTask';
 
-export type PlanPolicyDecision = 'allow' | 'deny';
+// Re-export (type only) so other modules can import from Plan if needed.
+export type { NetworkDenyMode } from './SemanticTask';
 
-export type NetworkDenyMode = 'never' | 'on-sensitive' | 'always';
+export type PlanPolicyDecision = 'allow' | 'deny';
 
 export interface PlanCoordinatorInfo {
   service: string;
@@ -24,24 +26,21 @@ export interface PlanCoordinatorInfo {
 }
 
 /**
- * Context for a routing plan.
- * Extends the SemanticTask context and embeds the requester.
+ * Plan context extends SemanticTask context and embeds requester.
+ * Because TaskContext includes `tenant`, PlanContext also includes it.
  */
 export interface PlanContext extends TaskContext {
   requester: Requester;
 }
 
 /**
- * Constraints applied at the plan level.
- * Extends SemanticTask constraints with network rules.
+ * Plan constraints are currently the same shape as task constraints.
+ * Orchestrator can read them directly.
  */
-export interface PlanConstraints extends TaskConstraints {
-  denyNetworkWhen?: NetworkDenyMode;
-}
+export interface PlanConstraints extends TaskConstraints {}
 
 /**
  * Minimal JSON Schema compatible representation for post-conditions.
- * Kept generic to avoid tight coupling to a particular validation library.
  */
 export type JsonSchema = Record<string, unknown>;
 
@@ -51,9 +50,6 @@ export interface PlanPolicy {
   postConditions?: JsonSchema;
 }
 
-/**
- * Fine-grained explanation of a tool scoring decision.
- */
 export interface CandidateScoreExplanation {
   capabilityFit: number;
   slaLikelihood: number;
@@ -67,27 +63,18 @@ export interface CandidateScoreExplanation {
   };
 }
 
-/**
- * A candidate tool that could be used to fulfil the plan's goal.
- */
 export interface PlanCandidate {
   toolId: string;
   score: number;
   explain: CandidateScoreExplanation;
 }
 
-/**
- * Selected primary tool and its rank among candidates.
- */
 export interface PlanSelection {
   toolId: string;
   reason: string;
   rank: number;
 }
 
-/**
- * Backoff configuration for retries.
- */
 export interface PlanBackoffConfig {
   type: 'exponential' | 'fixed';
   initialMs: number;
@@ -95,17 +82,11 @@ export interface PlanBackoffConfig {
   jitter?: boolean;
 }
 
-/**
- * High level retry policy applied by the orchestrator.
- */
 export interface PlanRetryPolicy {
   maxAttemptsPerStep: number;
   backoff: PlanBackoffConfig;
 }
 
-/**
- * Telemetry hints to control how much the orchestrator emits.
- */
 export interface PlanTelemetryConfig {
   emitTraceEvents: boolean;
   metricsLabels?: Record<string, string>;
@@ -115,9 +96,6 @@ export interface PlanTelemetryConfig {
   };
 }
 
-/**
- * Authentication and data handling hints for the orchestrator.
- */
 export interface PlanSecurityConfig {
   auth?: {
     mode: 'service_token';
@@ -130,9 +108,6 @@ export interface PlanSecurityConfig {
   };
 }
 
-/**
- * Reference to a concrete tool and endpoint that the orchestrator can invoke.
- */
 export interface PlanToolEndpointRef {
   toolId: string;
   endpoint?: {
@@ -143,9 +118,6 @@ export interface PlanToolEndpointRef {
   };
 }
 
-/**
- * Termination transition for a plan step.
- */
 export interface PlanStepTransitionTerminate {
   terminate: {
     status: 'timeout' | 'failure';
@@ -153,35 +125,22 @@ export interface PlanStepTransitionTerminate {
   };
 }
 
-/**
- * Transition to another step (e.g. fallback).
- */
 export interface PlanStepTransitionGoto {
   goto: string;
   record?: 'fallback';
 }
 
-/**
- * Success transition for a plan step.
- */
 export interface PlanStepOnSuccess {
   completePlan?: boolean;
   goto?: string;
 }
 
-/**
- * Group of transitions for a plan step.
- */
 export interface PlanStepTransitions {
   onSuccess?: PlanStepOnSuccess;
   onFailure?: PlanStepTransitionGoto | PlanStepTransitionTerminate;
   onTimeout?: PlanStepTransitionTerminate;
 }
 
-/**
- * A single step in the routing plan.
- * The orchestrator executes these steps according to transitions.
- */
 export interface PlanStep extends PlanStepTransitions {
   id: string;
   name: string;
@@ -191,9 +150,6 @@ export interface PlanStep extends PlanStepTransitions {
   expectedOutput?: JsonSchema | string;
 }
 
-/**
- * The full routing plan document returned by SOACRS.
- */
 export interface TaskRoutingPlan {
   planId: string;
   schemaVersion: string;
