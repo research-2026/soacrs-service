@@ -51,3 +51,6 @@ Thumbs.db
 # pnpm-lock.yaml
 
 /generated/prisma
+
+# Test-generated artifacts
+artifacts/
