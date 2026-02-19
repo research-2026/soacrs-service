@@ -32,4 +32,3 @@ Main entities:
 
 5. `execution_events`  
    Step-level telemetry emitted by the Orchestrator and ingested by SOACRS.
-
