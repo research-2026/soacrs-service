@@ -9,7 +9,7 @@
 
 ## 1. Purpose
 
-SOACRS must select the *best* tool(s) for a given **SemanticTask** and output a **TaskRoutingPlan (TRP)** that the Orchestrator can execute.
+SOACRS must select the _best_ tool(s) for a given **SemanticTask** and output a **TaskRoutingPlan (TRP)** that the Orchestrator can execute.
 
 The scoring strategy ensures decisions are:
 
@@ -27,10 +27,10 @@ SOACRS sits between:
 1. **NL→Task Translator (Mufthi)**  
    Produces a structured `SemanticTask` (capability + input + constraints + context).
 
-2. **SOACRS (this service)**  
-   - Fetches available tools for a capability from the Tool Registry  
-   - Fetches historical performance metrics  
-   - Scores candidates  
+2. **SOACRS (this service)**
+   - Fetches available tools for a capability from the Tool Registry
+   - Fetches historical performance metrics
+   - Scores candidates
    - Generates a TRP including **primary + fallback steps** and explanation
 
 3. **Orchestrator (Ayyash)**  
@@ -142,3 +142,4 @@ Then combine success rate and latency:
 slaLikelihood =
   slaSuccessWeight * successRate +
   slaLatencyWeight * latencyScore
+```

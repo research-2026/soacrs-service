@@ -1,0 +1,31 @@
+{
+  "context": {
+    "tenant": "acme-health",
+    "correlationId": "c-demo-001",
+    "idempotencyKey": "idem-demo-001",
+    "locale": "en-US",
+    "region": "ap-south-1"
+  },
+  "requester": {
+    "type": "service",
+    "id": "ui-demo-app",
+    "scopes": ["patient.write", "tool.invoke"]
+  },
+  "goal": {
+    "capability": "patient.create",
+    "input": {
+      "fullName": "Mufthi",
+      "address": "Kandy",
+      "dateOfBirth": "2002-02-11",
+      "age": 23,
+      "sex": "male"
+    },
+    "description": "Register a new patient in the system"
+  },
+  "constraints": {
+    "overallTimeoutMs": 2000,
+    "maxParallel": 1,
+    "costBudget": 1.0,
+    "privacyTags": ["phi"]
+  }
+}
