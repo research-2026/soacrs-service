@@ -1,12 +1,15 @@
-// tests/infrastructure/postgresPlanStore.infrastructure.test.ts
+// tests/infrastructure/postgresMetricsRepository.infrastructure.test.ts
 
 /**
  * Infrastructure tests for PostgresPlanStore.
  *
  * These tests use a lightweight in-memory fake Prisma client to verify that:
- *  - Plans are persisted with the correct tenantId and payload.
+ *  - Plans are persisted with the correct tenantId, capability and planJson.
  *  - Plans can be retrieved by planId.
  *  - Missing plans return null.
+ *
+ * Aligned with prisma/schema.prisma:
+ *   PlanDocument { planId (PK), tenantId, capability, createdAt, planJson }
  */
 
 import {
@@ -16,11 +19,11 @@ import {
 import type { TaskRoutingPlan } from '../../src/coordination/domain/Plan';
 
 type InMemoryPlanRow = {
-  id: number;
   planId: string;
   tenantId: string;
+  capability: string;
   createdAt: Date;
-  payload: unknown;
+  planJson: unknown;
 };
 
 describe('PostgresPlanStore', () => {
@@ -29,27 +32,15 @@ describe('PostgresPlanStore', () => {
 
     const fakePrisma: PrismaPlanClient = {
       planDocument: {
-        async create(args: unknown): Promise<InMemoryPlanRow> {
-          const { data } = args as {
-            data: Omit<InMemoryPlanRow, 'id'>;
-          };
-
-          const row: InMemoryPlanRow = {
-            id: rows.length + 1,
-            ...data,
-          };
-
-          rows.push(row);
-
-          return row;
+        async create(args: unknown): Promise<unknown> {
+          const { data } = args as { data: InMemoryPlanRow };
+          rows.push(data);
+          return data;
         },
 
         async findFirst(args: unknown): Promise<InMemoryPlanRow | null> {
           const { where } = args as { where: { planId: string } };
-
-          const row = rows.find((r) => r.planId === where.planId) ?? null;
-
-          return row;
+          return rows.find((r) => r.planId === where.planId) ?? null;
         },
       },
     };
@@ -101,7 +92,6 @@ describe('PostgresPlanStore', () => {
         },
       },
       candidates: [],
-      // selected is optional; we can omit it entirely for this test.
       retry: {
         maxAttemptsPerStep: 1,
         backoff: {
@@ -138,7 +128,7 @@ describe('PostgresPlanStore', () => {
 
     await store.savePlan(samplePlan.planId, samplePlan);
 
-    const loaded = (await store.getPlan('plan-123')) as TaskRoutingPlan | null;
+    const loaded = await store.getPlan('plan-123');
 
     expect(loaded).not.toBeNull();
     expect(loaded?.planId).toBe('plan-123');
@@ -149,7 +139,7 @@ describe('PostgresPlanStore', () => {
   it('should return null for a non-existent planId', async () => {
     const fakePrisma: PrismaPlanClient = {
       planDocument: {
-        async create(_args: unknown): Promise<InMemoryPlanRow> {
+        async create(_args: unknown): Promise<unknown> {
           throw new Error('Not used in this test');
         },
         async findFirst(_args: unknown): Promise<InMemoryPlanRow | null> {
@@ -159,8 +149,7 @@ describe('PostgresPlanStore', () => {
     };
 
     const store = new PostgresPlanStore(fakePrisma);
-
-    const loaded = (await store.getPlan('does-not-exist')) as TaskRoutingPlan | null;
+    const loaded = await store.getPlan('does-not-exist');
 
     expect(loaded).toBeNull();
   });

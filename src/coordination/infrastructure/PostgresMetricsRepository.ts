@@ -3,290 +3,211 @@
 /**
  * PostgresMetricsRepository
  *
- * Infrastructure implementation of IMetricsRepository using Prisma and PostgreSQL.
+ * Infrastructure implementation of IMetricsRepository using Prisma/PostgreSQL.
  *
- * Responsibilities:
- *  - Persist raw ToolExecutionEvent rows for auditing and analysis.
- *  - Maintain aggregated ToolMetrics per (tenantId, toolId, capability).
- *  - Provide read/write access to ToolMetrics for scoring and planning.
+ * Standards applied:
+ * - SRP: telemetry persistence + aggregate maintenance (no scoring logic here).
+ * - Deterministic aggregation: single source of truth is DB state.
+ * - Type safety: avoid `any`, convert DB BigInt/Decimal -> number at boundary.
  */
 
 import type { IMetricsRepository, ToolExecutionEvent, ToolMetrics } from '../domain/Metrics';
 import { getPrismaClient } from '../../shared/db/PrismaClient';
 
 /**
- * Narrow representation of the ToolMetrics row in the database.
+ * DB row shape for ToolMetrics (matches prisma/schema.prisma).
  */
 type ToolMetricsRow = {
-  id: number;
   tenantId: string;
   toolId: string;
   capability: string;
-  successCount: number;
-  failureCount: number;
-  totalLatencyMs: number;
-  avgLatencyMs: number;
-  avgReward: number;
+  successCount: bigint;
+  failureCount: bigint;
+  totalLatencyMs: bigint;
+  avgReward: unknown; // Prisma Decimal
   lastUpdated: Date;
 };
 
 /**
- * Narrow representation of the ToolExecutionEvent row in the database.
- */
-type ToolExecutionEventRow = {
-  id: number;
-  planId: string;
-  stepId: string;
-  tenantId: string;
-  toolId: string;
-  capability: string;
-  latencyMs: number;
-  success: boolean;
-  errorCode: string | null;
-  timestamp: Date;
-};
-
-/**
- * Narrow Prisma client type used by PostgresMetricsRepository.
- *
- * Argument types are deliberately `unknown` to keep the dependency
- * on Prisma flexible. The implementation casts to shapes it expects.
+ * Prisma client surface used here (narrowed).
+ * NOTE: ExecutionEvent model -> prisma.executionEvent delegate.
+ * ToolMetrics uses composite @@id([tenantId, toolId, capability]) so updates are by composite key.
  */
 export type PrismaMetricsClient = {
-  toolExecutionEvent: {
-    create: (args: unknown) => Promise<ToolExecutionEventRow>;
+  executionEvent: {
+    create: (args: unknown) => Promise<unknown>;
   };
   toolMetrics: {
-    findFirst: (args: unknown) => Promise<ToolMetricsRow | null>;
-    create: (args: unknown) => Promise<ToolMetricsRow>;
-    update: (args: unknown) => Promise<ToolMetricsRow>;
+    findUnique: (args: unknown) => Promise<ToolMetricsRow | null>;
+    create: (args: unknown) => Promise<unknown>;
+    update: (args: unknown) => Promise<unknown>;
   };
 };
 
 export class PostgresMetricsRepository implements IMetricsRepository {
   private readonly prisma: PrismaMetricsClient;
 
-  /**
-   * Create a new PostgresMetricsRepository.
-   *
-   * @param prismaClient Optional Prisma client for dependency injection.
-   */
   public constructor(prismaClient?: PrismaMetricsClient) {
     this.prisma = prismaClient ?? (getPrismaClient() as unknown as PrismaMetricsClient);
   }
 
-  /**
-   * Record a single execution event and update aggregated metrics
-   * for the corresponding (tenantId, toolId, capability) tuple.
-   *
-   * @param event Execution telemetry from the orchestrator.
-   */
   public async recordExecution(event: ToolExecutionEvent): Promise<void> {
-    // 1. Persist the raw execution event for auditing.
-    await this.prisma.toolExecutionEvent.create({
+    // 1) Persist raw step-level event (audit trail)
+    await this.prisma.executionEvent.create({
       data: {
         planId: event.planId,
         stepId: event.stepId,
         tenantId: event.tenantId,
         toolId: event.toolId,
         capability: event.capability,
-        latencyMs: event.latencyMs,
+        latencyMs: Math.trunc(event.latencyMs),
         success: event.success,
         errorCode: event.errorCode ?? null,
         timestamp: new Date(event.timestamp),
       },
-    } as {
-      data: Omit<ToolExecutionEventRow, 'id'>;
-    });
+    } as unknown);
 
-    // 2. Load existing metrics (if any) for this tool/capability/tenant.
-    const existing = await this.prisma.toolMetrics.findFirst({
+    // 2) Update aggregate ToolMetrics for (tenant, tool, capability)
+    const key = {
+      tenantId: event.tenantId,
+      toolId: event.toolId,
+      capability: event.capability,
+    };
+
+    const existing = await this.prisma.toolMetrics.findUnique({
       where: {
-        tenantId: event.tenantId,
-        toolId: event.toolId,
-        capability: event.capability,
+        // Prisma default composite id accessor naming:
+        // { tenantId_toolId_capability: { tenantId, toolId, capability } }
+        tenantId_toolId_capability: key,
       },
-    } as {
-      where: {
-        tenantId: string;
-        toolId: string;
-        capability: string;
-      };
-    });
+    } as unknown);
 
-    const successIncrement = event.success ? 1 : 0;
-    const failureIncrement = event.success ? 0 : 1;
+    const successInc = event.success ? 1n : 0n;
+    const failureInc = event.success ? 0n : 1n;
+    const latencyInc = BigInt(Math.max(0, Math.trunc(event.latencyMs)));
     const now = new Date();
 
     if (!existing) {
-      // No previous metrics: create a new row with initial values.
-      const totalExecutions = successIncrement + failureIncrement;
-      const totalLatency = event.latencyMs;
-      const avgLatency = totalExecutions > 0 ? totalLatency / totalExecutions : 0;
-
       await this.prisma.toolMetrics.create({
         data: {
-          tenantId: event.tenantId,
-          toolId: event.toolId,
-          capability: event.capability,
-          successCount: successIncrement,
-          failureCount: failureIncrement,
-          totalLatencyMs: totalLatency,
-          avgLatencyMs: avgLatency,
-          // No user feedback yet; this will be updated via feedback telemetry.
+          ...key,
+          successCount: successInc,
+          failureCount: failureInc,
+          totalLatencyMs: latencyInc,
+          // No feedback yet; TelemetryHandler will set via saveMetrics()
           avgReward: 0,
           lastUpdated: now,
         },
-      } as {
-        data: Omit<ToolMetricsRow, 'id'>;
-      });
-
+      } as unknown);
       return;
     }
 
-    // Existing metrics: update aggregated fields.
-    const updatedSuccessCount = existing.successCount + successIncrement;
-    const updatedFailureCount = existing.failureCount + failureIncrement;
-    const totalExecutions = updatedSuccessCount + updatedFailureCount;
-
-    const updatedTotalLatency = existing.totalLatencyMs + event.latencyMs;
-    const updatedAvgLatency = totalExecutions > 0 ? updatedTotalLatency / totalExecutions : 0;
-
     await this.prisma.toolMetrics.update({
-      where: {
-        id: existing.id,
-      },
+      where: { tenantId_toolId_capability: key },
       data: {
-        successCount: updatedSuccessCount,
-        failureCount: updatedFailureCount,
-        totalLatencyMs: updatedTotalLatency,
-        avgLatencyMs: updatedAvgLatency,
-        // Keep avgReward unchanged here; it will be updated by feedback logic.
+        successCount: existing.successCount + successInc,
+        failureCount: existing.failureCount + failureInc,
+        totalLatencyMs: existing.totalLatencyMs + latencyInc,
+        // Keep avgReward unchanged here; feedback path updates it
         avgReward: existing.avgReward,
         lastUpdated: now,
       },
-    } as {
-      where: { id: number };
-      data: Partial<ToolMetricsRow>;
-    });
+    } as unknown);
   }
 
-  /**
-   * Persist a ToolMetrics snapshot explicitly.
-   *
-   * This is useful for services that compute or adjust metrics externally
-   * (for example, via batch jobs or feedback handlers).
-   */
   public async saveMetrics(metrics: ToolMetrics): Promise<void> {
-    const executions = metrics.successCount + metrics.failureCount;
-    const avgLatency = executions > 0 ? metrics.totalLatencyMs / executions : 0;
-    const lastUpdatedDate = new Date(metrics.lastUpdated);
+    const key = {
+      tenantId: metrics.tenantId,
+      toolId: metrics.toolId,
+      capability: metrics.capability,
+    };
 
-    const existing = await this.prisma.toolMetrics.findFirst({
-      where: {
-        tenantId: metrics.tenantId,
-        toolId: metrics.toolId,
-        capability: metrics.capability,
-      },
-    } as {
-      where: {
-        tenantId: string;
-        toolId: string;
-        capability: string;
-      };
-    });
+    const existing = await this.prisma.toolMetrics.findUnique({
+      where: { tenantId_toolId_capability: key },
+    } as unknown);
+
+    const now = new Date(metrics.lastUpdated);
+
+    // Convert numbers -> DB BigInt (defensive truncation)
+    const successCount = BigInt(Math.max(0, Math.trunc(metrics.successCount)));
+    const failureCount = BigInt(Math.max(0, Math.trunc(metrics.failureCount)));
+    const totalLatencyMs = BigInt(Math.max(0, Math.trunc(metrics.totalLatencyMs)));
 
     if (!existing) {
       await this.prisma.toolMetrics.create({
         data: {
-          tenantId: metrics.tenantId,
-          toolId: metrics.toolId,
-          capability: metrics.capability,
-          successCount: metrics.successCount,
-          failureCount: metrics.failureCount,
-          totalLatencyMs: metrics.totalLatencyMs,
-          avgLatencyMs: avgLatency,
+          ...key,
+          successCount,
+          failureCount,
+          totalLatencyMs,
           avgReward: metrics.avgReward,
-          lastUpdated: lastUpdatedDate,
+          lastUpdated: now,
         },
-      } as {
-        data: Omit<ToolMetricsRow, 'id'>;
-      });
-
+      } as unknown);
       return;
     }
 
     await this.prisma.toolMetrics.update({
-      where: {
-        id: existing.id,
-      },
+      where: { tenantId_toolId_capability: key },
       data: {
-        successCount: metrics.successCount,
-        failureCount: metrics.failureCount,
-        totalLatencyMs: metrics.totalLatencyMs,
-        avgLatencyMs: avgLatency,
+        successCount,
+        failureCount,
+        totalLatencyMs,
         avgReward: metrics.avgReward,
-        lastUpdated: lastUpdatedDate,
+        lastUpdated: now,
       },
-    } as {
-      where: { id: number };
-      data: Partial<ToolMetricsRow>;
-    });
+    } as unknown);
   }
 
-  /**
-   * Fetch aggregated metrics for a given tool and capability
-   * in the context of a specific tenant.
-   *
-   * @param tenantId   Tenant identifier.
-   * @param toolId     Tool identifier.
-   * @param capability Capability name.
-   */
   public async getMetrics(
     tenantId: string,
     toolId: string,
     capability: string,
   ): Promise<ToolMetrics | null> {
-    const row = await this.prisma.toolMetrics.findFirst({
-      where: {
-        tenantId,
-        toolId,
-        capability,
-      },
-    } as {
-      where: {
-        tenantId: string;
-        toolId: string;
-        capability: string;
-      };
-    });
+    const row = await this.prisma.toolMetrics.findUnique({
+      where: { tenantId_toolId_capability: { tenantId, toolId, capability } },
+    } as unknown);
 
-    if (!row) {
-      return null;
-    }
-
+    if (!row) return null;
     return this.mapRowToDomainMetrics(row);
   }
 
-  /**
-   * Map a database metrics row into the domain ToolMetrics shape.
-   *
-   * Note: avgLatencyMs is kept as a DB-only detail; the domain only needs
-   * totalLatencyMs and counts to derive SLA-related metrics.
-   */
   private mapRowToDomainMetrics(row: ToolMetricsRow): ToolMetrics {
-    const metrics: ToolMetrics = {
+    return {
       tenantId: row.tenantId,
       toolId: row.toolId,
       capability: row.capability,
-      successCount: row.successCount,
-      failureCount: row.failureCount,
-      totalLatencyMs: row.totalLatencyMs,
-      avgReward: row.avgReward,
-      // Domain expects a string; we store Date in the DB.
+      successCount: safeBigIntToNumber(row.successCount),
+      failureCount: safeBigIntToNumber(row.failureCount),
+      totalLatencyMs: safeBigIntToNumber(row.totalLatencyMs),
+      avgReward: safeDecimalToNumber(row.avgReward),
       lastUpdated: row.lastUpdated.toISOString(),
     };
-
-    return metrics;
   }
+}
+
+/**
+ * Conversions (boundary layer)
+ * NOTE: if metrics can exceed Number.MAX_SAFE_INTEGER in your usage,
+ * switch the domain contract to bigint later (not now, per constraints).
+ */
+function safeBigIntToNumber(value: bigint): number {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function safeDecimalToNumber(value: unknown): number {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+  if (typeof value === 'string') {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : 0;
+  }
+  if (value && typeof value === 'object') {
+    const maybe = value as { toString?: () => string };
+    if (typeof maybe.toString === 'function') {
+      const n = Number(maybe.toString());
+      return Number.isFinite(n) ? n : 0;
+    }
+  }
+  return 0;
 }

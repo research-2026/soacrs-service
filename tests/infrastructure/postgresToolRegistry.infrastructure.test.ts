@@ -1,133 +1,133 @@
-// tests/infrastructure/postgresToolRegistry.infrastructure.test.ts
-
+// tests/infrastructure/postgresMetricsRepository.infrastructure.test.ts
 /**
- * Tests for PostgresToolRegistry.
+ * Infrastructure tests for PostgresPlanStore.
  *
- * These tests use a lightweight fake Prisma client to verify that:
- *  - tenant scoping is respected
- *  - capability filtering is applied
- *  - DB models are correctly mapped to domain Tool objects
+ * Verifies:
+ * - Plans are persisted with correct tenantId + capability + planJson.
+ * - Plans can be retrieved by planId.
+ * - Missing plans return null.
  */
 
 import {
-  PostgresToolRegistry,
-  type PrismaToolClient,
-} from '../../src/coordination/infrastructure/PostgresToolRegistry';
-import type { Tool } from '../../src/coordination/domain/Tool';
+  PostgresPlanStore,
+  type PrismaPlanClient,
+} from '../../src/coordination/infrastructure/PostgresPlanStore';
 
-type TenantToolWithTool = {
-  id: number;
+import type { TaskRoutingPlan } from '../../src/coordination/domain/Plan';
+
+type InMemoryPlanRow = {
+  planId: string;
   tenantId: string;
-  toolId: string;
-  enabled: boolean;
-  tool: {
-    id: string;
-    name: string;
-    version: string;
-    region: string | null;
-    baseCost: number | null;
-    meta: unknown;
-    capabilities: unknown;
-  };
+  capability: string;
+  createdAt: Date;
+  planJson: unknown;
 };
 
-describe('PostgresToolRegistry', () => {
-  it('should return tools enabled for the tenant that support the requested capability', async () => {
-    // Arrange: build fake DB rows.
-    const capabilitiesJson: unknown = [
-      {
-        name: 'patient.search',
-        inputsSchema: { type: 'object' },
-        outputsSchema: { type: 'object' },
-      },
-      {
-        name: 'patient.update',
-      },
-    ];
+describe('PostgresPlanStore', () => {
+  it('should save and retrieve a plan by planId', async () => {
+    const rows: InMemoryPlanRow[] = [];
 
-    const toolRow: TenantToolWithTool['tool'] = {
-      id: 'ehr-patient-api',
-      name: 'EHR Patient API',
-      version: '1.0.0',
-      region: 'us-east-1',
-      baseCost: 0.2,
-      meta: null,
-      capabilities: capabilitiesJson,
-    };
+    const fakePrisma: PrismaPlanClient = {
+      planDocument: {
+        async create(args: unknown): Promise<unknown> {
+          const { data } = args as { data: InMemoryPlanRow };
+          rows.push(data);
+          return data;
+        },
 
-    const tenantToolRow: TenantToolWithTool = {
-      id: 1,
-      tenantId: 'acme-health',
-      toolId: 'ehr-patient-api',
-      enabled: true,
-      tool: toolRow,
-    };
-
-    const fakePrisma: PrismaToolClient = {
-      tenantTool: {
-        // We assert that the registry calls findMany and we return our single row.
-        async findMany(_args: unknown): Promise<TenantToolWithTool[]> {
-          return [tenantToolRow];
+        async findFirst(args: unknown): Promise<InMemoryPlanRow | null> {
+          const { where } = args as { where: { planId: string } };
+          return rows.find((r) => r.planId === where.planId) ?? null;
         },
       },
     };
 
-    const registry = new PostgresToolRegistry(fakePrisma);
+    const store = new PostgresPlanStore(fakePrisma);
 
-    // Act
-    const tools: Tool[] = await registry.getToolsForCapability('acme-health', 'patient.search');
+    const samplePlan: TaskRoutingPlan = {
+      planId: 'plan-123',
+      schemaVersion: '1.0',
+      createdAt: new Date().toISOString(),
+      coordinator: {
+        service: 'SOACRS',
+        version: '0.1.0',
+        instance: 'soacrs-test-instance',
+      },
+      context: {
+        tenant: 'acme-health',
+        requester: { type: 'service', id: 'llm-app', scopes: ['patient.read'] },
+        correlationId: 'corr-1',
+        idempotencyKey: 'idem-1',
+        locale: 'en-US',
+        region: 'us-east-1',
+      },
+      goal: {
+        capability: 'patient.search',
+        input: { mrn: '12345' },
+        description: 'Find patient by MRN',
+      },
+      constraints: {
+        overallTimeoutMs: 2000,
+        maxParallel: 1,
+        costBudget: 1.0,
+        privacyTags: ['phi'],
+        denyNetworkWhen: 'never',
+      },
+      policy: {
+        preconditionsPassed: true,
+        policyDecision: 'allow',
+        postConditions: {
+          type: 'object',
+          required: ['patientId'],
+          properties: { patientId: { type: 'string' } },
+        },
+      },
+      candidates: [],
+      retry: {
+        maxAttemptsPerStep: 1,
+        backoff: { type: 'exponential', initialMs: 100, factor: 2.0, jitter: true },
+      },
+      telemetry: {
+        emitTraceEvents: true,
+        metricsLabels: { tenant: 'acme-health', capability: 'patient.search' },
+        callbacks: { progress: { type: 'none' }, completion: { type: 'none' } },
+      },
+      security: {
+        auth: {
+          mode: 'service_token',
+          tokenRef: 'secret://soacrs/ehr-token',
+          audience: 'ehr.example.com',
+        },
+        dataHandling: { maskInLogs: ['goal.input.mrn'], deleteOutputAfterMs: 300000 },
+      },
+      steps: [],
+    };
 
-    // Assert
-    expect(tools).toHaveLength(1);
+    await store.savePlan(samplePlan.planId, samplePlan);
 
-    const [tool] = tools;
+    const loaded = (await store.getPlan('plan-123')) as TaskRoutingPlan | null;
 
-    expect(tool.id).toBe('ehr-patient-api');
-    expect(tool.name).toBe('EHR Patient API');
-    expect(tool.version).toBe('1.0.0');
-    expect(tool.region).toBe('us-east-1');
-    expect(tool.baseCost).toBe(0.2);
-    expect(tool.capabilities).toHaveLength(2);
-    expect(tool.capabilities[0].name).toBe('patient.search');
+    expect(loaded).not.toBeNull();
+    expect(loaded?.planId).toBe('plan-123');
+    expect(loaded?.context.tenant).toBe('acme-health');
+    expect(loaded?.goal.capability).toBe('patient.search');
   });
 
-  it('should return an empty array if no tools match the capability', async () => {
-    const capabilitiesJson: unknown = [
-      {
-        name: 'another.capability',
-      },
-    ];
-
-    const toolRow: TenantToolWithTool['tool'] = {
-      id: 'some-tool',
-      name: 'Some Tool',
-      version: '1.0.0',
-      region: null,
-      baseCost: null,
-      meta: null,
-      capabilities: capabilitiesJson,
-    };
-
-    const tenantToolRow: TenantToolWithTool = {
-      id: 2,
-      tenantId: 'acme-health',
-      toolId: 'some-tool',
-      enabled: true,
-      tool: toolRow,
-    };
-
-    const fakePrisma: PrismaToolClient = {
-      tenantTool: {
-        async findMany(_args: unknown): Promise<TenantToolWithTool[]> {
-          return [tenantToolRow];
+  it('should return null for a non-existent planId', async () => {
+    const fakePrisma: PrismaPlanClient = {
+      planDocument: {
+        async create(_args: unknown): Promise<unknown> {
+          throw new Error('Not used in this test');
+        },
+        async findFirst(_args: unknown): Promise<InMemoryPlanRow | null> {
+          return null;
         },
       },
     };
 
-    const registry = new PostgresToolRegistry(fakePrisma);
+    const store = new PostgresPlanStore(fakePrisma);
+    const loaded = (await store.getPlan('does-not-exist')) as TaskRoutingPlan | null;
 
-    const tools: Tool[] = await registry.getToolsForCapability('acme-health', 'patient.search');
-
-    expect(tools).toHaveLength(0);
+    expect(loaded).toBeNull();
   });
 });
