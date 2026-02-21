@@ -3,13 +3,12 @@
 /**
  * PostgresPlanStore
  *
- * Infrastructure implementation of IPlanStore using Prisma and PostgreSQL.
- * This component is responsible for:
- *  - Persisting TaskRoutingPlan documents for debugging, replay and analysis.
- *  - Fetching plans by planId.
+ * Infrastructure implementation of IPlanStore using Prisma/PostgreSQL.
  *
- * The domain-facing interface IPlanStore is intentionally generic (unknown),
- * but this implementation assumes the payload is a TaskRoutingPlan.
+ * Standards applied:
+ * - SRP: only stores and retrieves plan documents.
+ * - Boundary mapping: DB row <-> domain JSON is localized here.
+ * - Prisma-decoupling: narrow client shape (avoids tight coupling to generated types).
  */
 
 import type { TaskRoutingPlan } from '../domain/Plan';
@@ -18,21 +17,28 @@ import { getPrismaClient } from '../../shared/db/PrismaClient';
 
 /**
  * Narrow representation of the PlanDocument row in the database.
+ * Must match prisma/schema.prisma PlanDocument model:
+ * - planId (PK)
+ * - tenantId
+ * - capability
+ * - planJson
+ * - createdAt
  */
 type PlanDocumentRow = {
-  id: number;
   planId: string;
   tenantId: string;
+  capability: string;
   createdAt: Date;
-  payload: unknown;
+  planJson: unknown;
 };
 
 /**
- * Narrow Prisma client type used by PostgresPlanStore.
+ * Narrow Prisma client surface used by this store.
+ * We keep args as `unknown` to reduce Prisma type coupling.
  */
 export type PrismaPlanClient = {
   planDocument: {
-    create: (args: unknown) => Promise<PlanDocumentRow>;
+    create: (args: unknown) => Promise<unknown>;
     findFirst: (args: unknown) => Promise<PlanDocumentRow | null>;
   };
 };
@@ -40,58 +46,36 @@ export type PrismaPlanClient = {
 export class PostgresPlanStore implements IPlanStore {
   private readonly prisma: PrismaPlanClient;
 
-  /**
-   * Create a new PostgresPlanStore.
-   *
-   * @param prismaClient Optional Prisma client for dependency injection.
-   */
   public constructor(prismaClient?: PrismaPlanClient) {
     this.prisma = prismaClient ?? (getPrismaClient() as unknown as PrismaPlanClient);
   }
 
-  /**
-   * Persist a plan document into the database.
-   *
-   * IPlanStore expresses this in generic terms (planId + JSON payload).
-   * In this implementation, we assume the JSON is a TaskRoutingPlan and
-   * extract the tenantId and createdAt from it for indexing.
-   *
-   * @param planId   The plan identifier.
-   * @param planJson The plan payload (expected to be a TaskRoutingPlan).
-   */
   public async savePlan(planId: string, planJson: unknown): Promise<void> {
     const plan = planJson as TaskRoutingPlan;
 
+    // Defensive extraction for indexing (tenant + capability used in DB indexes)
     const tenantId = plan.context.tenant;
-    const createdAtDate = new Date(plan.createdAt);
+    const capability = plan.goal.capability;
 
     await this.prisma.planDocument.create({
       data: {
         planId,
         tenantId,
-        createdAt: createdAtDate,
-        payload: plan,
+        capability,
+        // DB expects full TRP JSON
+        planJson: plan,
+        // Keep createdAt aligned to plan timestamp for audit
+        createdAt: new Date(plan.createdAt),
       },
-    } as { data: Omit<PlanDocumentRow, 'id'> });
+    } as unknown);
   }
 
-  /**
-   * Retrieve a TaskRoutingPlan by its planId.
-   *
-   * @param planId The identifier of the plan.
-   * @returns The TaskRoutingPlan if found, otherwise null.
-   */
   public async getPlan(planId: string): Promise<TaskRoutingPlan | null> {
     const row = await this.prisma.planDocument.findFirst({
-      where: {
-        planId,
-      },
-    } as { where: { planId: string } });
+      where: { planId },
+    } as unknown);
 
-    if (!row) {
-      return null;
-    }
-
-    return row.payload as TaskRoutingPlan;
+    if (!row) return null;
+    return row.planJson as TaskRoutingPlan;
   }
 }
