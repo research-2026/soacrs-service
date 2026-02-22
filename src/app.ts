@@ -29,12 +29,21 @@ import { PostgresPlanStore } from './coordination/infrastructure/PostgresPlanSto
 import { TelemetryDtoValidationError } from './telemetry/dto/TelemetryDtoValidationError';
 import { SemanticTaskDtoValidationError } from './coordination/dto/SemanticTaskDto';
 
+import { createTelemetryRoutes } from './http/routes/telemetryRoutes';
+import { TelemetryHandler } from './telemetry/application/TelemetryHandler';
+import { MetricsService } from './telemetry/application/MetricsService';
+
 export type AppDeps = {
   /**
-   * Optional PlanBuilder injection (used by integration tests to avoid DB).
-   * Production uses default composition until SOA-S18 moves wiring to bootstrap.
+   * Optional PlanBuilder injection (tests / alternate wiring).
    */
   planBuilder?: Pick<PlanBuilderService, 'buildPlan'>;
+
+  /**
+   * Optional TelemetryHandler injection (tests / alternate wiring).
+   * Prevents Prisma init in Jest by allowing pure mocks.
+   */
+  telemetryHandler?: Pick<TelemetryHandler, 'handleExecutionTelemetry' | 'handleFeedbackTelemetry'>;
 };
 
 export function createApp(deps: AppDeps = {}): Application {
@@ -65,6 +74,13 @@ export function createApp(deps: AppDeps = {}): Application {
     deps.planBuilder ??
     (config.env === 'test' ? createStubPlanBuilder() : buildDefaultPlanBuilder());
   app.use(createPlanRoutes(planBuilder));
+
+  // SOA-S17: /v1/telemetry/*
+  const telemetryHandler =
+    deps.telemetryHandler ??
+    (config.env === 'test' ? createStubTelemetryHandler() : buildDefaultTelemetryHandler());
+
+  app.use(createTelemetryRoutes(telemetryHandler));
 
   // Global error handler (single place)
   app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
@@ -124,6 +140,44 @@ function buildDefaultPlanBuilder(): PlanBuilderService {
       version: config.serviceVersion,
     },
   });
+}
+
+/**
+ * Default production telemetry wiring.
+ *
+ * NOTE:
+ * - In SOA-S18 we will move all wiring into a proper bootstrap/composition root.
+ * - For now, app.ts does minimal composition for runtime convenience.
+ */
+function buildDefaultTelemetryHandler(): TelemetryHandler {
+  const metricsRepository = new PostgresMetricsRepository();
+  const metricsService = new MetricsService(metricsRepository);
+  return new TelemetryHandler(metricsService);
+}
+
+/**
+ * Test-safe stub TelemetryHandler.
+ *
+ * Why:
+ * - Prevents Prisma initialization in Jest when no telemetryHandler is injected.
+ * - If a test hits this, it should explicitly inject a telemetryHandler.
+ */
+function createStubTelemetryHandler(): Pick<
+  TelemetryHandler,
+  'handleExecutionTelemetry' | 'handleFeedbackTelemetry'
+> {
+  return {
+    async handleExecutionTelemetry() {
+      throw new Error(
+        'TelemetryHandler not configured. Inject telemetryHandler for telemetry endpoint tests.',
+      );
+    },
+    async handleFeedbackTelemetry() {
+      throw new Error(
+        'TelemetryHandler not configured. Inject telemetryHandler for telemetry endpoint tests.',
+      );
+    },
+  };
 }
 
 /**
